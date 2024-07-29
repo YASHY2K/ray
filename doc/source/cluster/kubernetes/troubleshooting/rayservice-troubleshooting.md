@@ -352,3 +352,45 @@ If the annotation isn't set, KubeRay automatically uses each RayCluster custom r
 Hence, both the old and new RayClusters have different `RAY_external_storage_namespace` values, and the new RayCluster is unable to access the old cluster metadata.
 Another solution is to set the `RAY_external_storage_namespace` value manually to a unique value for each RayCluster custom resource.
 See [kuberay#1296](https://github.com/ray-project/kuberay/issues/1296) for more details.
+
+(kuberay-raysvc-issue11)=
+### Issue 11: Readiness and liveness probes failing when applying ray-service.sample.yaml file
+While following the [setup tutorial](https://docs.ray.io/en/master/cluster/kubernetes/getting-started/rayservice-quick-start.html), I noticed that Step 3 references an incorrect file: _'[ray-service.sample.yaml](https://raw.githubusercontent.com/ray-project/kuberay/v1.1.1/ray-operator/config/samples/ray-service.sample.yaml)'_. When this file is applied, the worker node crashes, and the logs indicate that the readiness/liveness probe failed. The expected behavior is different.
+Expected:
+> ervice-sample-raycluster-6mj28-worker-small-group-kg4v5   1/1     Running   0          3m52s
+> rayservice-sample-raycluster-6mj28-head-x77h4             1/1     Running   0          3m52s
+
+But in reality:
+> ervice-sample-raycluster-6mj28-worker-small-group-kg4v5   0/1     Running   0
+> rayservice-sample-raycluster-6mj28-head-x77h4             1/1     Running   0
+![image](https://github.com/user-attachments/assets/25e06f06-1d35-461f-94a1-5b9fc7a3206e)
+
+Solution:
+1. The readiness probe failure is expected because a Ray worker Pod without any Ray Serve replicas lacks a Proxy actor. KubeRay v1.1.0 introduced a readiness probe to check for this. If a worker Pod doesn't have a Proxy actor, the probe fails, marking the Pod as unready and preventing it from receiving traffic. For more details, refer to [this link](https://docs.ray.io/en/master/cluster/kubernetes/user-guides/rayservice.html#step-9-why-1-worker-pod-isnt-ready).
+2. To fix the issue, you can add readiness and liveness probes directly in the YAML file. Here's an example configuration:
+
+```yaml
+readinessProbe:
+  exec:
+    command:
+      - sh
+      - -c
+      - wget -T 2 -q -O- http://localhost:52365/api/local_raylet_healthz | grep success && wget -T 2 -q -O- http://localhost:8000/-/healthz | grep success
+  periodSeconds: 5
+  timeoutSeconds: 60
+  successThreshold: 1
+  failureThreshold: 5
+
+livenessProbe:
+  exec:
+    command:
+      - sh
+      - -c
+      - wget -T 2 -q -O- http://localhost:52365/api/local_raylet_healthz | grep success
+  periodSeconds: 5
+  timeoutSeconds: 60
+  successThreshold: 1
+  failureThreshold: 5
+```
+
+Adding these probes ensures that the worker Pods are correctly monitored and restarted if necessary. For more details, refer to the [sample YAML file](https://github.com/YASHY2K/kuberay/blob/yashp-rayservicesample-fix/ray-operator/config/samples/ray-service.sample.yaml).
